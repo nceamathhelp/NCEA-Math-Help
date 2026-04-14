@@ -18,3 +18,6 @@ View your app in AI Studio: https://ai.studio/apps/ccf7809f-04e3-428e-a46c-10094
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Link
+https://nceamathhelp.github.io/NCEA-Math-Help
