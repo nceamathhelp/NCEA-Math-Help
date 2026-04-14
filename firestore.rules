@@ -65,7 +65,7 @@ service cloud.firestore {
     function isValidQuizAttempt(data) {
       return data.keys().hasAll(['uid', 'date', 'difficulty', 'score', 'total', 'incorrectQuestions']) &&
              data.uid == request.auth.uid &&
-             data.date is timestamp &&
+             (data.date is timestamp || data.date == null) &&
              data.difficulty in ['Achieved', 'Merit', 'Excellence'] &&
              data.score is number && data.score >= 0 && data.score <= 10 &&
              data.total is number && data.total == 10 &&
