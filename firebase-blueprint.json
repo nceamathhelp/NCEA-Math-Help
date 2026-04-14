@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "UserProgress": {
+      "title": "User Progress",
+      "description": "Stores the progress and quiz history of a student",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique ID of the user" },
+        "strugglingConcepts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of question IDs the user is struggling with"
+        },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last time progress was updated" }
+      },
+      "required": ["uid", "strugglingConcepts"]
+    },
+    "QuizAttempt": {
+      "title": "Quiz Attempt",
+      "description": "A single quiz attempt by a user",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique ID of the user" },
+        "date": { "type": "string", "format": "date-time", "description": "When the quiz was taken" },
+        "difficulty": { "type": "string", "enum": ["Achieved", "Merit", "Excellence"] },
+        "score": { "type": "number" },
+        "total": { "type": "number" },
+        "incorrectQuestions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["uid", "date", "difficulty", "score", "total"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/progress/current": {
+      "schema": "UserProgress",
+      "description": "The current progress summary for a specific user"
+    },
+    "/users/{userId}/attempts/{attemptId}": {
+      "schema": "QuizAttempt",
+      "description": "History of quiz attempts for a specific user"
+    }
+  }
+}

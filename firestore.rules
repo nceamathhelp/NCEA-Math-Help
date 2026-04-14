@@ -1,0 +1,100 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: /users/{userId}/progress
+// Document ID: current
+// Fields:
+//   - uid: string (required) - The user's ID
+//   - strugglingConcepts: list of strings (required) - IDs of questions missed multiple times
+//   - updatedAt: timestamp (optional) - Last update time
+//
+// Collection: /users/{userId}/attempts
+// Document ID: auto-generated
+// Fields:
+//   - uid: string (required) - The user's ID
+//   - date: timestamp (required) - When the quiz was taken
+//   - difficulty: string (required, enum: Achieved, Merit, Excellence)
+//   - score: number (required, positive)
+//   - total: number (required, positive)
+//   - incorrectQuestions: list of strings (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "ccsywaikato@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidString(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function isValidList(val, maxItemSize, maxListSize) {
+      return val is list && val.size() <= maxListSize;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUserProgress(data) {
+      return data.keys().hasAll(['uid', 'strugglingConcepts']) &&
+             data.uid == request.auth.uid &&
+             data.strugglingConcepts is list &&
+             data.strugglingConcepts.size() <= 100;
+    }
+
+    function isValidQuizAttempt(data) {
+      return data.keys().hasAll(['uid', 'date', 'difficulty', 'score', 'total', 'incorrectQuestions']) &&
+             data.uid == request.auth.uid &&
+             data.date is timestamp &&
+             data.difficulty in ['Achieved', 'Merit', 'Excellence'] &&
+             data.score is number && data.score >= 0 && data.score <= 10 &&
+             data.total is number && data.total == 10 &&
+             data.incorrectQuestions is list &&
+             data.incorrectQuestions.size() <= 10;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      
+      match /progress/current {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isOwner(userId) && isValidUserProgress(request.resource.data);
+      }
+
+      match /attempts/{attemptId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidQuizAttempt(request.resource.data);
+        allow update, delete: if isAdmin(); // Users shouldn't modify history
+      }
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

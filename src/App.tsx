@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   BookOpen, 
@@ -14,7 +14,11 @@ import {
   Info,
   History,
   Lightbulb,
-  AlertTriangle
+  AlertTriangle,
+  LogIn,
+  LogOut,
+  User as UserIcon,
+  Loader2
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -31,16 +35,95 @@ import {
   CartesianGrid, 
   Tooltip, 
   ResponsiveContainer,
-  ReferenceLine,
-  LineChart,
-  Line
+  ReferenceLine
 } from 'recharts';
 import { Difficulty, Question, QuizState, View, UserProgress, QuizAttempt } from './types';
 import { BIVARIATE_QUESTIONS } from './data/questions';
 import { BIVARIATE_CONCEPTS } from './data/concepts';
+import { 
+  auth, 
+  db, 
+  googleProvider, 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  sendSignInLinkToEmail,
+  isSignInWithEmailLink,
+  signInWithEmailLink,
+  doc, 
+  setDoc, 
+  getDoc, 
+  collection, 
+  addDoc, 
+  query, 
+  orderBy, 
+  limit, 
+  onSnapshot 
+} from './firebase';
+import { User } from 'firebase/auth';
+import { serverTimestamp, Timestamp } from 'firebase/firestore';
+import { Mail, Send } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+
+// Error Handling
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export default function App() {
   const [view, setView] = useState<View>('home');
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [email, setEmail] = useState('');
+  const [emailSent, setEmailSent] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [selectedLevel, setSelectedLevel] = useState<number | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
   const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty | null>(null);
@@ -60,22 +143,132 @@ export default function App() {
     strugglingConcepts: []
   });
 
-  // Load progress on mount
+  // Auth Listener & Email Link Handler
   useEffect(() => {
-    const saved = localStorage.getItem('ncea_math_progress');
-    if (saved) {
-      try {
-        setProgress(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to load progress", e);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthLoading(false);
+    });
+
+    // Check if the page was loaded from an email link
+    if (isSignInWithEmailLink(auth, window.location.href)) {
+      let emailForSignIn = window.localStorage.getItem('emailForSignIn');
+      if (!emailForSignIn) {
+        // If email is missing (e.g. user opened link on different device), ask for it
+        emailForSignIn = window.prompt('Please provide your email for confirmation');
+      }
+      
+      if (emailForSignIn) {
+        setAuthLoading(true);
+        signInWithEmailLink(auth, emailForSignIn, window.location.href)
+          .then(() => {
+            window.localStorage.removeItem('emailForSignIn');
+            setView('home');
+          })
+          .catch((error) => {
+            console.error("Error signing in with email link", error);
+            setLoginError("The login link has expired or already been used.");
+            setAuthLoading(false);
+          });
       }
     }
+
+    return () => unsubscribe();
   }, []);
 
-  // Save progress whenever it changes
+  // Sync Progress from Firestore
   useEffect(() => {
-    localStorage.setItem('ncea_math_progress', JSON.stringify(progress));
-  }, [progress]);
+    if (!user) {
+      // Fallback to local storage if not logged in
+      const saved = localStorage.getItem('ncea_math_progress');
+      if (saved) {
+        try {
+          setProgress(JSON.parse(saved));
+        } catch (e) {
+          console.error("Failed to load local progress", e);
+        }
+      }
+      return;
+    }
+
+    // Real-time progress summary
+    const progressDoc = doc(db, `users/${user.uid}/progress/current`);
+    const unsubProgress = onSnapshot(progressDoc, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setProgress(prev => ({
+          ...prev,
+          strugglingConcepts: data.strugglingConcepts || []
+        }));
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, progressDoc.path);
+    });
+
+    // Real-time attempts history
+    const attemptsRef = collection(db, `users/${user.uid}/attempts`);
+    const q = query(attemptsRef, orderBy('date', 'desc'), limit(50));
+    const unsubAttempts = onSnapshot(q, (snapshot) => {
+      const attempts = snapshot.docs.map(d => {
+        const data = d.data();
+        return {
+          ...data,
+          date: data.date instanceof Timestamp ? data.date.toDate().toISOString() : data.date
+        } as QuizAttempt;
+      });
+      setProgress(prev => ({
+        ...prev,
+        attempts
+      }));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, attemptsRef.path);
+    });
+
+    return () => {
+      unsubProgress();
+      unsubAttempts();
+    };
+  }, [user]);
+
+  const login = async () => {
+    try {
+      setLoginError(null);
+      await signInWithPopup(auth, googleProvider);
+      setView('home');
+    } catch (error) {
+      console.error("Login failed", error);
+      setLoginError("Failed to sign in with Google.");
+    }
+  };
+
+  const sendLoginLink = async (e: any) => {
+    e.preventDefault();
+    if (!email) return;
+
+    const actionCodeSettings = {
+      url: window.location.href, // Redirect back to this exact page
+      handleCodeInApp: true,
+    };
+
+    try {
+      setLoginError(null);
+      await sendSignInLinkToEmail(auth, email, actionCodeSettings);
+      window.localStorage.setItem('emailForSignIn', email);
+      setEmailSent(true);
+    } catch (error) {
+      console.error("Error sending email link", error);
+      setLoginError("Failed to send login email. Please try again.");
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setView('home');
+    } catch (error) {
+      console.error("Logout failed", error);
+    }
+  };
 
   // Initialize quiz
   const startQuiz = (difficulty: Difficulty) => {
@@ -109,7 +302,7 @@ export default function App() {
     }));
   };
 
-  const nextQuestion = () => {
+  const nextQuestion = async () => {
     setShowFeedback(false);
     if (quizState.currentQuestionIndex + 1 < quizState.questions.length) {
       setQuizState(prev => ({
@@ -118,8 +311,9 @@ export default function App() {
       }));
     } else {
       // Save attempt
-      const attempt: QuizAttempt = {
-        date: new Date().toISOString(),
+      const attemptData = {
+        uid: user?.uid || 'anonymous',
+        date: user ? serverTimestamp() : new Date().toISOString(),
         difficulty: selectedDifficulty!,
         score: quizState.score,
         total: quizState.questions.length,
@@ -128,19 +322,54 @@ export default function App() {
           .map(q => q.id)
       };
 
-      setProgress(prev => {
-        const newAttempts = [attempt, ...prev.attempts].slice(0, 50); // Keep last 50
-        // Update struggling concepts (simple logic: if missed more than twice)
-        const allMissed = newAttempts.flatMap(a => a.incorrectQuestions);
-        const counts: Record<string, number> = {};
-        allMissed.forEach(id => counts[id] = (counts[id] || 0) + 1);
-        const struggling = Object.keys(counts).filter(id => counts[id] >= 2);
+      if (user) {
+        try {
+          // Save attempt to subcollection
+          const attemptsRef = collection(db, `users/${user.uid}/attempts`);
+          await addDoc(attemptsRef, attemptData);
 
-        return {
-          attempts: newAttempts,
-          strugglingConcepts: struggling
-        };
-      });
+          // Update struggling concepts in summary doc
+          const newAttempts = [
+            { ...attemptData, date: new Date().toISOString() } as QuizAttempt, 
+            ...progress.attempts
+          ].slice(0, 50);
+          
+          const allMissed = newAttempts.flatMap(a => a.incorrectQuestions);
+          const counts: Record<string, number> = {};
+          allMissed.forEach(id => counts[id] = (counts[id] || 0) + 1);
+          const struggling = Object.keys(counts).filter(id => counts[id] >= 2);
+
+          const progressDoc = doc(db, `users/${user.uid}/progress/current`);
+          await setDoc(progressDoc, {
+            uid: user.uid,
+            strugglingConcepts: struggling,
+            updatedAt: serverTimestamp()
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+        }
+      } else {
+        // Local storage fallback
+        const attempt: QuizAttempt = {
+          ...attemptData,
+          date: new Date().toISOString()
+        } as QuizAttempt;
+
+        setProgress(prev => {
+          const newAttempts = [attempt, ...prev.attempts].slice(0, 50);
+          const allMissed = newAttempts.flatMap(a => a.incorrectQuestions);
+          const counts: Record<string, number> = {};
+          allMissed.forEach(id => counts[id] = (counts[id] || 0) + 1);
+          const struggling = Object.keys(counts).filter(id => counts[id] >= 2);
+
+          const newProgress = {
+            attempts: newAttempts,
+            strugglingConcepts: struggling
+          };
+          localStorage.setItem('ncea_math_progress', JSON.stringify(newProgress));
+          return newProgress;
+        });
+      }
 
       setView('results');
     }
@@ -153,6 +382,90 @@ export default function App() {
     setSelectedDifficulty(null);
   };
 
+  const renderLogin = () => (
+    <motion.div 
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="max-w-md mx-auto py-20 px-4 text-center space-y-8"
+    >
+      <div className="space-y-4">
+        <div className="inline-flex items-center justify-center p-4 bg-blue-100 rounded-full text-blue-600">
+          <GraduationCap size={64} />
+        </div>
+        <h2 className="text-3xl font-bold">Sign In</h2>
+        <p className="text-slate-600">
+          Save your progress and track your scores securely.
+        </p>
+      </div>
+
+      <Card className="p-6 space-y-6">
+        {emailSent ? (
+          <div className="space-y-4 py-4">
+            <div className="mx-auto bg-green-100 text-green-600 p-3 rounded-full w-fit">
+              <Send size={32} />
+            </div>
+            <h3 className="text-xl font-bold">Check your email!</h3>
+            <p className="text-slate-600 text-sm">
+              We've sent a secure login link to <strong>{email}</strong>. 
+              Click the link in the email to sign in instantly.
+            </p>
+            <Button variant="outline" className="w-full" onClick={() => setEmailSent(false)}>
+              Try a different email
+            </Button>
+          </div>
+        ) : (
+          <>
+            <form onSubmit={sendLoginLink} className="space-y-4">
+              <div className="space-y-2 text-left">
+                <label className="text-sm font-medium text-slate-700">Email Address</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <Input 
+                    type="email" 
+                    placeholder="student@school.nz" 
+                    className="pl-10"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <Button type="submit" className="w-full h-12 text-lg">
+                Send Login Link
+              </Button>
+            </form>
+
+            <div className="relative">
+              <Separator />
+              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-2 text-xs text-slate-400 font-bold uppercase">
+                Or
+              </span>
+            </div>
+
+            <Button variant="outline" size="lg" className="w-full gap-3 h-12" onClick={login}>
+              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
+              Continue with Google
+            </Button>
+          </>
+        )}
+
+        {loginError && (
+          <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2">
+            <AlertTriangle size={16} />
+            {loginError}
+          </div>
+        )}
+      </Card>
+
+      <Button variant="ghost" className="w-full" onClick={() => setView('home')}>
+        Continue as Guest
+      </Button>
+      
+      <p className="text-xs text-slate-400">
+        Your data is protected by Google's secure authentication system.
+      </p>
+    </motion.div>
+  );
   const renderHome = () => (
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
@@ -169,6 +482,17 @@ export default function App() {
         <p className="text-xl text-slate-600 max-w-lg mx-auto">
           Kia ora! Let's master NCEA Statistics together with clear explanations and targeted practice.
         </p>
+        
+        {user ? (
+          <div className="flex items-center justify-center gap-2 text-blue-600 font-medium">
+            <UserIcon size={18} />
+            Welcome back, {user.email}!
+          </div>
+        ) : (
+          <Button variant="link" className="text-blue-600" onClick={() => setView('login')}>
+            Sign in to save your progress
+          </Button>
+        )}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-1 max-w-md mx-auto">
@@ -635,30 +959,40 @@ export default function App() {
             </div>
             <span className="font-bold text-xl tracking-tight">NCEA Math Help</span>
           </div>
-          <nav className="hidden sm:flex items-center gap-6 text-sm font-medium text-slate-600">
-            <button onClick={resetToHome} className="hover:text-blue-600 transition-colors">Home</button>
-            <span className="text-slate-300">/</span>
-            <span className={selectedLevel ? "text-slate-900" : ""}>Level {selectedLevel || '...'}</span>
-            {selectedSubject && (
-              <>
-                <span className="text-slate-300">/</span>
-                <span className="text-slate-900">{selectedSubject}</span>
-              </>
+          <div className="flex items-center gap-4">
+            {user ? (
+              <Button variant="ghost" size="sm" className="gap-2 text-slate-600" onClick={logout}>
+                <LogOut size={18} />
+                <span className="hidden sm:inline">Sign Out</span>
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" className="gap-2 text-slate-600" onClick={() => setView('login')}>
+                <LogIn size={18} />
+                <span className="hidden sm:inline">Sign In</span>
+              </Button>
             )}
-          </nav>
+          </div>
         </div>
       </header>
 
       <main className="container mx-auto px-4 pb-20">
-        <AnimatePresence mode="wait">
-          {view === 'home' && renderHome()}
-          {view === 'subject-select' && renderSubjectSelect()}
-          {view === 'difficulty-select' && renderDifficultySelect()}
-          {view === 'quiz' && renderQuiz()}
-          {view === 'results' && renderResults()}
-          {view === 'review' && renderReview()}
-          {view === 'progress' && renderProgress()}
-        </AnimatePresence>
+        {authLoading ? (
+          <div className="flex flex-col items-center justify-center py-40 space-y-4">
+            <Loader2 className="animate-spin text-blue-600" size={48} />
+            <p className="text-slate-500 font-medium">Loading your profile...</p>
+          </div>
+        ) : (
+          <AnimatePresence mode="wait">
+            {view === 'login' && renderLogin()}
+            {view === 'home' && renderHome()}
+            {view === 'subject-select' && renderSubjectSelect()}
+            {view === 'difficulty-select' && renderDifficultySelect()}
+            {view === 'quiz' && renderQuiz()}
+            {view === 'results' && renderResults()}
+            {view === 'review' && renderReview()}
+            {view === 'progress' && renderProgress()}
+          </AnimatePresence>
+        )}
       </main>
 
       <footer className="py-8 border-t bg-white mt-auto">
