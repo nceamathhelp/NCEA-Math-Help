@@ -1,23 +1,21 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# NCEA Math Help
 
-# Run and deploy your AI Studio app
+A comprehensive study tool for NCEA Level 3 Statistics students, focusing on Bivariate Data analysis.
 
-This contains everything you need to run your app locally.
+## Features
+- **Interactive Quizzes**: Practice with Achieved, Merit, and Excellence level questions.
+- **Concept Review**: Detailed explanations, formulas, and examples for key bivariate statistics concepts.
+- **Progress Tracking**: Monitor your performance and identify areas for improvement.
+- **Visual Learning**: Interactive scatter plots and residual plots to help visualize data patterns.
 
-View your app in AI Studio: https://ai.studio/apps/ccf7809f-04e3-428e-a46c-10094d9efb30
+## Live Demo
+Check out the live app here: [https://nceamathhelp.github.io/NCEA-Math-Help](https://nceamathhelp.github.io/NCEA-Math-Help)
 
-## Run Locally
+## Tech Stack
+- **Frontend**: React 19, Vite, Tailwind CSS
+- **Visualization**: Recharts
+- **Animations**: Framer Motion
+- **Icons**: Lucide React
 
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
-
-## Link
-https://nceamathhelp.github.io/NCEA-Math-Help
+---
+Designed to help students master NCEA Statistics with clarity and confidence.
