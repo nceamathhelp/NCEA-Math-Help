@@ -246,9 +246,9 @@ export default function App() {
     if (!email) return;
 
     const actionCodeSettings = {
-      url: window.location.href, // Redirect back to this exact page
+      url: 'https://nceamathhelp.github.io/NCEA-Math-Help/',
       handleCodeInApp: true,
-    };
+  };
 
     try {
       setLoginError(null);
